@@ -1,0 +1,335 @@
+---
+title: "tweets_final"
+output: html_document
+date: "2024-05-07"
+---
+
+# Final Tweets
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(tidyr)
+library(syuzhet)
+library(FactoMineR)
+library(factoextra)
+library(corrplot)
+library(lubridate)
+```
+## Limpieza de datos y transformación
+
+Comenzamos por la limpieza del dataset de tweets, ya que vamos a hacer un análisis de sentimientos, necesitamos limpiar el texto del tweets para eliminar emojis, signos de puntuación, carácteres raros...
+
+Además, vamos a cruzar este dataset con el de carreras, para ver menciones por cada carrera, para esto también leemos el dataset de 
+
+```{r tweets_csv}
+tweets <- read.csv("F1_tweets.csv", header = T)
+```
+
+```{r races_df}
+f1_races_df <- read.csv("races.csv", header = T)
+f1_races_df <- f1_races_df[, c("raceId", "date", "name", "time")]
+```
+
+A continuación creamos las funciones que nos van a permitir limpiar el texto del tweet y la que nos va a permitir extraer las menciones de los tweets
+
+```{r fn_tweets}
+clean_tweet <- function(tweet) {
+  tweet <- str_remove_all(tweet, "https?://[\\w\\./]+")
+  tweet <- str_remove_all(tweet, "@")
+  tweet <- str_remove_all(tweet, "#")
+  tweet <- str_remove_all(tweet, "[[:punct:]]")
+  tweet <- str_remove_all(tweet, "[^\\w\\s]")
+  tweet <- tolower(tweet)
+  tweet <- str_trim(tweet)
+  
+  return(tweet)
+}
+
+extract_mentions <- function(tweet) {
+  mentions <- str_extract_all(tweet, "@\\w+")
+  mentions <- unlist(mentions)
+  
+  if (length(mentions) == 0) {
+    return(NA)
+  }
+  formated_mentions = paste(mentions, collapse=", ")
+  
+  return(formated_mentions)
+}
+
+```
+
+Antes de empezar con el análisis de sentimientos, limpiamos el dataset de tweets, eliminando retweets y columnas que no nos van a aportar ningún valor en el análisis que haremos posteriormente
+
+```{r filter_tweets}
+nombres_de_columnas <- colnames(tweets)
+
+filtered_tweets <- tweets[tweets$is_retweet == 'False', ]
+tweets_df <- filtered_tweets[, c("user_location", "user_followers", "date", "text", "hashtags")]
+
+tweets_df <- tweets_df[2, ]
+```
+
+Una vez tenemos el dataset limpio, limpiamos los tweets y extraemos las menciones con las funciones que hemos declarado anteriormente
+
+```{r ly_fn_tweets}
+tweets_df$cleaned_tweets <- sapply(tweets_df$text, clean_tweet)
+tweets_df$mentions <- sapply(tweets_df$text, extract_mentions)
+```
+
+Una vez lo tenemos limpio extraemos el sentimiento que tiene el tweet, para los posteriores análisis que haremos, también aprovechamos para clasificar los scores en negativo, neutro y positivo para los posteriores AFCs
+
+Esto lo hacemos con la librería de Syuzhet, la cual nos permite entre otras cosas extraer el sentimiento de un tweet
+
+```{r sentiment_tweets}
+tweets_df$sentiment_values <- sapply(tweets_df$cleaned_tweets, function(tweet) {
+  sentiment_scores <- get_nrc_sentiment(tweet)
+  score <- sum(sentiment_scores[c("positive")]) - sum(sentiment_scores[c("negative")])
+  return(score)
+})
+
+tweets_df <- tweets_df %>%
+  mutate(sentiment_category = case_when(
+    sentiment_values < 0 ~ "negativo",
+    sentiment_values == 0 ~ "neutro",
+    sentiment_values > 0 ~ "positivo"
+  ))
+```
+
+Para terminar con la parte de limpieza y transformación mergeamos los datasets de carreras y el nuevo dataset de tweets que hemos construido, esto lo haremos basándonos en la fecha de la carrera
+
+
+```{r merge_df}
+tweets_df$date <- as.Date(tweets_df$date, format = "%Y-%m-%d")
+f1_races_df$date <- as.Date(f1_races_df$date, format = "%Y-%m-%d")
+
+tweets_df <- merge(tweets_df, f1_races_df, by = "date")
+```
+
+
+```{r tweets, echo=FALSE}
+# Borrar antes de entregar, para no volver a sacar los datos
+tweets_df = read.csv('tweets_analysis.csv')
+
+head(tweets_df)
+```
+
+
+## Análisis Exploratorio de Tweets
+
+Una vez tenemos un dataset limpio y con los datos que necesitamos pasamos a hacer el análisis exploratorio para poder empezar a ver cuándo se escriben más tweets, en qué circuitos, que cuentas son más mencionadas...
+
+Comenzamos viendo en que año se escribieron más tweets
+
+```{r, tweets_anio, echo=FALSE}
+ggplot(tweets_por_anio, aes(x = reorder(año, num_tweets), y = num_tweets, fill = año)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Número de Tweets por Año", x = "Carrera", y = "Número de Tweets") +
+  theme(legend.position = "none")
+```
+
+Como podemos ver casi todos los tweets son del 2023, esto lo tendremos en cuenta para posteriores análisis
+
+Vamos a ver en que circuitos se escriben más tweets
+
+```{r tweets_circuito, echo=FALSE}
+tweets_por_anio <- tweets_df %>%
+  mutate(año = year(as.Date(date, format="%Y-%m-%d"))) %>%
+  group_by(name, año) %>%
+  summarise(num_tweets = n(), .groups = 'drop') %>%
+  arrange(desc(num_tweets)) %>%
+  slice_head(n = 15)
+
+ggplot(tweets_por_anio, aes(x = reorder(name, num_tweets), y = num_tweets, fill = name)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Número de Tweets por Circuito", x = "Carrera", y = "Número de Tweets") +
+  theme(legend.position = "none")
+```
+
+Como podemos ver el circuito dónde más tweets se han escrito es en el de Abu Dhabi, hay que tener en cuenta que la mayor parte del dataset es del 2023
+
+Posiblemente, este outlier tenga que ver con que era la última carrera del año y que fue donde Max Verstappen ganó el titúlo mundial a Hamilton en la última vuelta
+
+Continuamos viendo cuáles son las cuentas más mencionadas
+
+```{r cuentas_mas_mencionadas, echo=FALSE}
+mentions_df <- tweets_df %>%
+  filter(mentions != "") %>%
+  separate_rows(mentions, sep = ",\\s*") %>%
+  count(mentions, name = "count", sort = TRUE) %>%
+  top_n(15, count)
+
+mentions_df
+
+ggplot(mentions_df, aes(x = reorder(mentions, count), y = count)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Top 15 Cuentas de Twitter Más Mencionadas",
+       x = "Cuenta de Twitter",
+       y = "Número de Menciones")
+```
+
+En este gráfico se puede observar el comportamiento de los tweets de los pilotos más mencionados en Twitter. Como era de esperar, la cuenta de Hamilton es la más mencionada, debido a que durante los años en que Hamilton gana los campeonatos, otras cuentas destacadas fueron las de Verstappen y del equipo Mercedes-Benz.
+
+Pasamos a ver que hashtags son los más usados
+
+```{r hashtags_mas_usados, echo=FALSE}
+hashtags_df <- tweets_df %>%
+  filter(hashtags != "", !is.na(hashtags)) %>%
+  filter(str_detect(hashtags, "\\[.*?\\]")) %>%
+  filter(hashtags != "[]") %>%
+  mutate(hashtags = str_extract_all(hashtags, "\\w+")) %>%
+  unnest(hashtags) %>%
+  count(hashtags, name = "frecuencia", sort = TRUE) %>%
+  top_n(15, frecuencia)
+
+ggplot(hashtags_df, aes(x = reorder(hashtags, frecuencia), y = frecuencia)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Top 10 Hashtags Más Usados",
+       x = "Hashtags",
+       y = "Frecuencia")
+```
+
+Lógicamente el hashtag más usado es el de F1 , continuado por el de AbuDhabi, aquí podemos ver la correlación con el número de tweets por circuitos y los motivos mencionados anteriormente
+
+## PCA de Menciones y Análisis de Sentimientos
+
+Continuamos con la siguiente parte del análisis de tweets, haciendo un PCA con las menciones y el tipo de sentimiento de los tweets que se ponen en cada uno
+
+Comenzamos preparando el dataset de tweets para tener solo las cuentas de los pilótos que más nos interesan
+
+```{r afc_tweet_prep}
+tweets_df_expanded <- tweets_df %>%
+  unnest(mentions)
+
+pilots_of_interest <- c("@LewisHamilton", "@Max33Verstappen", "@SChecoPerez", "@alo_oficial", "@ValtteriBottas")
+
+tweets_df_expanded <- tweets_df_expanded %>%
+  filter(mentions %in% pilots_of_interest)
+```
+
+Una vez tenemos el dataset listo, creamos la tabla de frecuencias con el tipo de sentimiento de los tweets y las cuentas de twitter de los pilótos que hemos seleccionado anteriormente
+
+```{r afc_ft}
+frequency_table <- tweets_df_expanded %>%
+  count(mentions, sentiment_category) %>%
+  spread(key = sentiment_category, value = n, fill = 0)
+
+frequency_table <- as.data.frame(frequency_table)
+rownames(frequency_table) <- frequency_table$mentions
+frequency_table <- select(frequency_table, -mentions)
+
+frequency_table
+```
+
+También obtenemos la tabla de frecuencias relativas, para ver los porcentajes de la matriz
+
+```{r afc_relative_ft}
+mentions_relative = frequency_table/sum(frequency_table); round(mentions_relative, 4)
+```
+
+Una vez tenemos la matriz de frecuencias, hacemos un test de Chi2 para ver si son independientes y por lo tanto tiene sentido hacer el AFC
+
+```{r afc_chi_2}
+chisq.test(frequency_table)
+```
+
+Como el p-value es menos que alpha, tiene sentido hacer el AFC
+
+```{r afc_1}
+afc = CA(frequency_table, graph = FALSE)
+eig.val <- get_eigenvalue(afc)
+values_media = 100 * (1/nrow(eig.val))
+fviz_eig(afc, addlabels = TRUE) +
+  geom_hline(yintercept=values_media, linetype=2, color="red")
+```
+
+Como podemos ver aunque solo podríamos coger una dimensión y sería lo ideal, vamos a coger las 2 ya que así podemos jugar un poco más con los gráficos y explicar una mayor variabilidad
+
+```{r}
+fviz_ca_row(afc, axes = c(1,2), repel = TRUE, col.row = "cos2",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"))
+```
+
+```{r}
+corrplot(afc$row$cos2[,1:2], is.corr=FALSE)
+```
+
+```{r}
+fviz_ca_col(afc, axes = c(1,2), repel = TRUE, col.col = "contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"))
+```
+
+```{r}
+fviz_ca_biplot(afc, repel = TRUE, 
+                     label = "all",
+                     col.row = "cos2",
+                     col.col = "contrib",
+                     gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+                     ggtheme = theme_minimal()) +
+        labs(title = "Gráfico Biplot",
+             x = "Dimensión 1", y = "Dimensión 2")
+```
+
+## AFC de Circuitos y Análisis de Sentimientos
+
+```{r}
+frequency_table_circuits <- tweets_df %>%
+  count(name, sentiment_category) %>%
+  spread(key = sentiment_category, value = n, fill = 0)
+
+frequency_table_circuits <- as.data.frame(frequency_table_circuits)
+rownames(frequency_table_circuits) <- frequency_table_circuits$name
+frequency_table_circuits <- select(frequency_table_circuits, -name)
+
+frequency_table_circuits
+```
+
+```{r}
+circuits_relative = frequency_table_circuits/sum(frequency_table_circuits); round(circuits_relative, 4)
+```
+
+```{r}
+chisq.test(frequency_table_circuits)
+```
+
+
+```{r}
+afc = CA(frequency_table_circuits, graph = FALSE)
+eig.val <- get_eigenvalue(afc)
+values_media = 100 * (1/nrow(eig.val))
+fviz_eig(afc, addlabels = TRUE) +
+  geom_hline(yintercept=values_media, linetype=2, color="red")
+```
+
+```{r}
+fviz_ca_row(afc, axes = c(1,2), repel = TRUE, col.row = "cos2",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"))
+```
+```{r}
+corrplot(afc$row$cos2[,1:2], is.corr=FALSE)
+```
+
+```{r}
+fviz_ca_col(afc, axes = c(1,2), repel = TRUE, col.col = "contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"))
+```
+
+```{r}
+fviz_ca_biplot(afc, repel = TRUE, 
+                     label = "all",
+                     col.row = "cos2",
+                     col.col = "contrib",
+                     gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+                     ggtheme = theme_minimal()) +
+        labs(title = "Gráfico Biplot",
+             x = "Dimensión 1", y = "Dimensión 2")```
