@@ -15,6 +15,9 @@ library(syuzhet)
 library(igraph)
 library(e1071)
 library(shinycssloaders)
+library(arules)
+library(mice)
+library(arulesViz)
 
 tweets_df <- read.csv("../data/tweets_analysis_final.csv", header = TRUE)
 dataset_completo <- read.csv("../data/dataset_f1.csv")
@@ -22,6 +25,13 @@ dataset <- read.csv("../data/dataset_f1_con_meteo.csv")
 circuitos <- read.csv("../data/circuits.csv")
 carreras <- read.csv("../data/races.csv")
 datos_reglas <- read.csv("../data/reglas_de_asoc_f1.csv")
+datos_mapa_circuitos_21 <- read.csv("../data/mapa1_21.csv")
+datos_mapa_circuitos_22 <- read.csv("../data/mapa1_22.csv")
+datos_mapa_carrera_tweets <- read.csv("../data/mapa2.csv")
+datos_mapa_paises_pilotos <- read.csv("../data/mapa3.csv")
+datos_mapa_tiempos_tweets <- read.csv("../data/mapa4.csv")
+datos_mapa_circuitos_f1 <- read.csv("../data/mapa5.csv")
+datos_mapa_boxes_posicion_final <- read.csv("../data/mapa6.csv")
 
 check_columns <- function(dataset, cols) {
   all(cols %in% colnames(dataset))
@@ -30,9 +40,7 @@ check_columns <- function(dataset, cols) {
 clasificaciones_app <- function() {
   required_columns_main <- c("año", "circuitId", "pos_en_carrera", "referencia")
   required_columns_carreras <- c("circuitId", "name")
-  
-  print(colnames(carreras))
-  
+    
   if (!check_columns(dataset_completo, required_columns_main)) {
     stop("El dataset principal no contiene las columnas necesarias: ", paste(required_columns_main, collapse = ", "))
   }
@@ -214,7 +222,7 @@ visualizacion_correlaciones <- function() {
 
 reglas_app <- function() {
   ui <- fluidPage(
-    titlePanel("Análisis de Reglas de Asociación "),
+    titlePanel("Análisis de Reglas de Asociación"),
     sidebarLayout(
       sidebarPanel(
         radioButtons("rhs_choice", "Selecciona RHS",
@@ -235,55 +243,66 @@ reglas_app <- function() {
   )
   
   server <- function(input, output, session) {
-    print(colnames(datos_reglas))
     observe({
       if (input$rhs_choice == "ganador=Si") {
-        pilotos <- datos_reglas %>% filter(ganador == "Si") %>% count(referencia, name = "veces_ganado")
-        updateSelectInput(session, "referencia", choices = unique(pilotos$referencia))
+        pilotos <- datos_reglas %>% filter(ganador == "Si") %>% count(raceId, name = "veces_ganado")
+        updateSelectInput(session, "referencia", choices = unique(pilotos$raceId))
       } else {
-        pilotos <- datos_reglas %>% filter(puntua == "Si") %>% count(referencia, name = "veces_puntuado")
-        updateSelectInput(session, "referencia", choices = unique(pilotos$referencia))
+        pilotos <- datos_reglas %>% filter(puntua == "Si") %>% count(raceId, name = "veces_puntuado")
+        updateSelectInput(session, "referencia", choices = unique(pilotos$raceId))
       }
     })
     
     observeEvent(input$analizar, {
       req(input$referencia)
       
-      filtered_data <- datos_reglas %>% filter(referencia == input$referencia)
+      filtered_data <- datos_reglas %>% filter(raceId == input$referencia)
       
       if (input$rhs_choice == "ganador=Si") {
-        reglas_data <- filtered_data %>% dplyr::select(-puntua)
+        reglas_data <- filtered_data %>% dplyr::select(-puntua, -raceId)
       } else {
-        reglas_data <- filtered_data %>% dplyr::select(-ganador)
+        reglas_data <- filtered_data %>% dplyr::select(-ganador, -raceId)
       }
       
-      reglas <- apriori(reglas_data, parameter = list(minlen = 3, supp = 0.004, conf = 0.8), 
-                        appearance = list(rhs = input$rhs_choice))
+      # Convert data to transactions
+      transacciones <- as(reglas_data, "transactions")
+      
+      reglas <- apriori(transacciones, parameter = list(minlen = 3, supp = 0.004, conf = 0.8), 
+                        appearance = list(rhs = input$rhs_choice), control = list(verbose = FALSE))
       
       reglas_no_redundantes <- reglas[!is.redundant(reglas)]
       ordenadas <- arules::sort(reglas_no_redundantes, by = input$ordenar_por)
       quality(ordenadas) <- round(quality(ordenadas), digits = 3)
       
       output$reglas_output <- renderPrint({
-        inspect(ordenadas)
+        if (length(ordenadas) > 0) {
+          inspect(ordenadas)
+        } else {
+          "No se generaron reglas de asociación."
+        }
       })
       
       output$reglas_plot <- renderPlot({
-        plot(ordenadas, method = "graph", control = list(engine = "igraph"))
+        if (length(ordenadas) > 0) {
+          plot(ordenadas, method = "graph", control = list(engine = "igraph"))
+        } else {
+          plot.new()
+          text(0.5, 0.5, "No se generaron reglas de asociación.", cex = 1.5)
+        }
       })
     })
     
     output$grafico_barras <- renderPlot({
       if (input$rhs_choice == "ganador=Si") {
-        pilotos_mas_frecuentes <- datos_reglas %>% filter(ganador == "Si") %>% count(referencia, name = "freq") %>% arrange(desc(freq)) %>% head(10)
+        pilotos_mas_frecuentes <- datos_reglas %>% filter(ganador == "Si") %>% count(raceId, name = "freq") %>% arrange(desc(freq)) %>% head(10)
         ylim <- c(0, 100)
       } else {
-        pilotos_mas_frecuentes <- datos_reglas %>% filter(puntua == "Si") %>% count(referencia, name = "freq") %>% arrange(desc(freq)) %>% head(10)
+        pilotos_mas_frecuentes <- datos_reglas %>% filter(puntua == "Si") %>% count(raceId, name = "freq") %>% arrange(desc(freq)) %>% head(10)
         ylim <- c(0, 300)
       }
       
-      barplot(pilotos_mas_frecuentes$freq, names.arg = pilotos_mas_frecuentes$referencia,
-              main = "Pilotos más frecuentes", xlab = "Referencia", ylab = "Frecuencia",
+      barplot(pilotos_mas_frecuentes$freq, names.arg = pilotos_mas_frecuentes$raceId,
+              main = "Carreras más frecuentes", xlab = "Carrera", ylab = "Frecuencia",
               col = "skyblue", ylim = ylim, cex.names = 0.8, las = 2)
     })
   }
@@ -406,8 +425,10 @@ pca_app <- function() {
       dplyr::select(where(is.numeric)) %>%
       dplyr::select(-pos_en_carrera, -acumulado_victorias, -hora)
     general_datos_ae <- scale(general_data_numericas)
+    general_datos_ae_imp <- mice(general_datos_ae, m = 1)
+    general_datos_ae_imp <- mice::complete(general_datos_ae_imp)
     
-    general_res.pca <- FactoMineR::PCA(general_datos_ae, scale.unit = FALSE, graph = FALSE, ncp = 5)
+    general_res.pca <- FactoMineR::PCA(general_datos_ae_imp, scale.unit = FALSE, graph = FALSE, ncp = 5)
     
     output$generalSummary <- renderPrint({
       summary(general_data_numericas)
@@ -685,83 +706,44 @@ tweets_viz <- function() {
   shinyApp(ui = ui, server = server)
 }
 
-mapa_popularidad <- function() {
-  datos_unificados <- merge(dataset_completo, circuitos, by = "circuitId")
-  datos_unificados1 <- merge(datos_unificados, tweets_df, by= 'raceId')
-  
-  datos <- data.frame(
-    lat = datos_unificados1$lat,
-    lon = datos_unificados1$lng,
-    competicion = datos_unificados1$name.x,
-    sentimientos = datos_unificados1$sentiment_values, 
-    tipo_sent = datos_unificados1$sentiment_category,
-    año = datos_unificados1$año
-  )
-  
-  datos_21 <- subset(datos, año == 2021)
-  datos_22 <- subset(datos, año == 2022)
-  
-  agrupar_por_año <- function(datos_año) {
-    agrupado <- datos_año %>%
-      group_by(competicion, lon, lat) %>%
-      summarise(
-        pop_positiva = mean(sentimientos[tipo_sent == "positivo"], na.rm = TRUE),
-        pop_negativa = mean(sentimientos[tipo_sent == "negativo"], na.rm = TRUE),
-        pop_neutra = mean(sentimientos[tipo_sent == "neutro"], na.rm = TRUE),
-        tamano = sum(pop_positiva, pop_negativa, pop_neutra, na.rm = TRUE),
-        recuento = n(),
-        año = unique(datos_año$año)
-      ) %>%
-      ungroup()
-    
-    porcentaje <- data.frame(
-      competicion = agrupado$competicion,
-      porc_positiva = sum(str_count(datos_año$sentimientos[datos_año$tipo_sent =='positivo']))/agrupado$recuento,
-      porc_negativa = sum(str_count(datos_año$sentimientos[datos_año$tipo_sent =='negativo']))/agrupado$recuento,
-      porc_neutra = sum(str_count(datos_año$sentimientos[datos_año$tipo_sent =='neutro']))/agrupado$recuento
-    )
-    
-    resultado <- merge(agrupado, porcentaje, by ="competicion")
-    
-    return(resultado)
-  }
-  
-  result_21 <- agrupar_por_año(datos_21)
-  result_22 <- agrupar_por_año(datos_22)
-  
-  final <- merge(result_21, result_22, all = TRUE)
-  
-
+mapa_popularidad_circuitos_año <- function() {
   ui <- fluidPage(
-    titlePanel("Mapa de popularidad de circuitos según tweets"),
+    titlePanel("Visualización de popularidad de los circuitos por año"),
     
-
-    mainPanel(
-      fluidRow(
-        plotlyOutput("mapa_2021"),
-        plotlyOutput("mapa_2022")
+    sidebarLayout(
+      sidebarPanel(
+        selectInput("dataset", "Selecciona el año:",
+          choices = c("2021" = "result_21", "2022" = "result_22"))
+      ),
+      mainPanel(
+        plotlyOutput("popularityPlot")
       )
     )
   )
-  
 
   server <- function(input, output) {
-    output$mapa_2021 <- renderPlotly({
+    output$popularityPlot <- renderPlotly({
+      dataset <- switch(input$dataset,
+                        "result_21" = datos_mapa_circuitos_21,
+                        "result_22" = datos_mapa_circuitos_22)
+      year <- switch(input$dataset,
+                    "result_21" = "2021",
+                    "result_22" = "2022")
       
       g <- list(
         scope = 'world',
         projection = list(type = 'orthographic'),
         showland = TRUE,
-        landcolor = ('rgb(217, 217, 217)'),
+        landcolor = 'rgb(217, 217, 217)',
         showocean = TRUE,
         oceancolor = 'rgb(204, 255, 255)',
         subunitwidth = 1,
         countrywidth = 1,
-        subunitcolor = 'rgb(255,255,255)',
-        countrycolor = 'rgb(255,255,255)'
+        subunitcolor = 'rgb(255, 255, 255)',
+        countrycolor = 'rgb(255, 255, 255)'
       )
       
-      fig <- plot_geo(result_21, locationmode = 'ISO-3', sizes = c(1, 250))
+      fig <- plot_geo(dataset, locationmode = 'ISO-3', sizes = c(1, 250))
       fig <- fig %>% add_markers(
         x = ~lon, y = ~lat, size = ~porc_positiva, marker = list(sizeref = 0.05, sizemode = "area"), color = 'pop_positiva',
         hoverinfo = "text",
@@ -790,62 +772,230 @@ mapa_popularidad <- function() {
             color = 'black'
           ))
       
-      fig <- fig %>% layout(title = 'Popularidad en 2021', geo = g)
-      
-      fig
-    })
-    
-    output$mapa_2022 <- renderPlotly({
-      # Generar el mapa para 2022 con Plotly
-      
-      g <- list(
-        scope = 'world',
-        projection = list(type = 'orthographic'),
-        showland = TRUE,
-        landcolor = ('rgb(217, 217, 217)'),
-        showocean = TRUE,
-        oceancolor = 'rgb(204, 255, 255)',
-        subunitwidth = 1,
-        countrywidth = 1,
-        subunitcolor = 'rgb(255,255,255)',
-        countrycolor = 'rgb(255,255,255)'
-      )
-      
-      fig <- plot_geo(result_22, locationmode = 'ISO-3', sizes = c(1, 250))
-      fig <- fig %>% add_markers(
-        x = ~lon, y = ~lat, size = ~porc_positiva, marker = list(sizeref = 0.05, sizemode = "area"), color = 'pop_positiva',
-        hoverinfo = "text",
-        mode = 'text',
-        text = ~competicion,
-        textfont = list(
-          size = 10,  
-          color = 'black'
-        )) %>%
-        add_markers(
-          x = ~lon, y = ~lat, size = ~porc_negativa, marker = list(sizeref = 0.05, sizemode = "area"), color = 'pop_negativa', 
-          hoverinfo = "text",
-          mode = 'text',
-          text = ~competicion,
-          textfont = list(
-            size = 10, 
-            color = 'black'
-          )) %>%
-        add_markers(
-          x = ~lon, y = ~lat, size = ~porc_neutra, marker = list(sizeref = 0.05, sizemode = "area"), color = 'pop_neutra', 
-          hoverinfo = "text",
-          mode = 'text',
-          text = ~competicion,
-          textfont = list(
-            size = 10,  
-            color = 'black'
-          ))
-      
-      fig <- fig %>% layout(title = 'Popularidad en 2022', geo = g)
+      fig <- fig %>% layout(title = paste('Popularidad en', year), geo = g)
       
       fig
     })
   }
-    shinyApp(ui = ui, server = server)
+
+  shinyApp(ui, server)
+}
+
+mapa_visualización_carrera_tweets <- function() {
+  ui <- fluidPage(
+    titlePanel("Visualización de popularidad de la carrera según tweets publicados por horas"),
+    
+    mainPanel(
+      plotOutput("distPlot")
+    )
+  )
+
+  server <- function(input, output) {
+    output$distPlot <- renderPlot({
+      ggplot(datos_mapa_carrera_tweets, aes(x = time, y = conteo, color = sentimientos, group = sentimientos)) +
+        geom_line(size = 1) +
+        labs(x = "Hora de publicación", y = "Número de Tweets", color = "Sentimiento") +
+        theme_minimal() +
+        ggtitle("Popularidad de la carrera según tweets publicados por horas")
+    })
+  }
+
+  shinyApp(ui, server)
+}
+
+mapa_paises_mas_pilotos <- function(){
+  ui <- fluidPage(
+    titlePanel("Visualización de países con más pilotos"),
+    mainPanel(
+      plotlyOutput("plot")
+    )
+  )
+
+  server <- function(input, output) {
+    output$plot <- renderPlotly({
+      g <- list(
+        scope = 'world',
+        projection = list(type = 'orthographic'),
+        showland = TRUE,
+        landcolor = ('rgb(217, 217, 217)'),
+        showocean = TRUE,
+        oceancolor = 'rgb(204, 255, 255)',
+        subunitwidth = 1,
+        countrywidth = 1,
+        subunitcolor = 'rgb(255,255,255)',
+        countrycolor = 'rgb(255,255,255)'
+      )
+      
+      fig <- plot_geo(datos_mapa_paises_pilotos, locationmode = 'ISO-3', sizes = c(1, 250))
+      
+      fig <- fig %>% add_markers(
+        x = ~long, y = ~lat, size = ~porc_baja, marker = list(sizeref = 0.05, sizemode = "area"), color = 'poco',
+        hoverinfo = "text",
+        mode = 'text',
+        text = ~nacionalidad,
+        textfont = list(
+          size = 10,  # Tamaño del texto
+          color = 'black'
+        )) %>%
+        add_markers(
+          x = ~long, y = ~lat, size = ~porc_media, marker = list(sizeref = 0.05, sizemode = "area"), color = 'medio', 
+          hoverinfo = "text",
+          mode = 'text',
+          text = ~nacionalidad,
+          textfont = list(
+            size = 10,  # Tamaño del texto
+            color = 'black'
+          )) %>%
+        add_markers(
+          x = ~long, y = ~lat, size = ~porc_alta, marker = list(sizeref = 0.05, sizemode = "area"), color = 'alto', 
+          hoverinfo = "text",
+          mode = 'text',
+          text = ~nacionalidad,
+          textfont = list(
+            size = 10,  # Tamaño del texto
+            color = 'black'
+          ))
+      
+      fig <- fig %>% layout(title = 'Países con más pilotos', geo = g)
+      
+      fig
+    })
+  }
+
+  shinyApp(ui = ui, server = server)
+}
+
+mapa_tiempos_realizados_tweets <- function(){
+  ui <- fluidPage(
+    titlePanel("Relación de tiempos realizados con tweets"),
+    sidebarLayout(
+      sidebarPanel(
+        selectInput("competicion", "Seleccionar competición:",
+                    choices = NULL) # No incluimos las opciones aquí
+      ),
+      mainPanel(
+        plotOutput("grafico")
+      )
+    )
+  )
+
+  server <- function(input, output, session) {
+    data <- reactiveValues(datos_mapa_tiempos_tweets = NULL)
+    
+    observe({
+      data$result <- datos_mapa_tiempos_tweets
+      updateSelectInput(session, "competicion", choices = unique(datos_mapa_tiempos_tweets$competicion))
+    })
+    
+    output$grafico <- renderPlot({
+      req(data$result) # Asegurarse de que 'result' no sea NULL
+      df <- subset(data$result, competicion == input$competicion)
+
+      grafico_barras <- ggplot(df, aes(x = competicion, y = recuento, fill = tipo_sent)) +
+        geom_bar(position = 'dodge', stat = 'identity') +  # Barras laterales
+        labs(title = "Relación de Tiempos Realizados con Tweets",
+            x = "Competición", y = "Tiempos Realizados") +
+        scale_fill_manual(values = c("positivo" = "green", "negativo" = "red", "neutro" = "grey")) +
+        theme_minimal() +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1))
+      
+      grafico_barras
+    })
+  }
+
+  shinyApp(ui = ui, server = server)
+}
+
+mapa_circuitos_f1 <- function() {
+  ui <- fluidPage(
+    titlePanel("Visualización de Circuitos de F1"),
+    mainPanel(
+      plotlyOutput("plot")
+    )
+  )
+
+  server <- function(input, output) {
+    output$plot <- renderPlotly({
+      g <- list(
+        scope = 'world',
+        projection = list(type = 'orthographic'),
+        showland = TRUE,
+        landcolor = 'rgb(217, 217, 217)',
+        showocean = TRUE,
+        oceancolor = 'rgb(204, 255, 255)',
+        subunitwidth = 1,
+        countrywidth = 1,
+        subunitcolor = 'rgb(255,255,255)',
+        countrycolor = 'rgb(255,255,255)'
+      )
+      
+      fig <- plot_geo(datos_mapa_circuitos_f1, locationmode = 'ISO-3', sizes = c(1, 250))
+      fig <- fig %>%
+        add_text(
+          x = ~lon, y = ~lat, text = ~name, marker = list(sizeref = 0.05, sizemode = "area"),
+          textfont = list(size = 10, color = 'black'),
+          hoverinfo = "text",
+          hovertext = ~paste(
+            'Circuito: ', name, '<br>',
+            'País: ', country, '<br>',
+            'Localización: ', location, '<br>',
+            'Número de carreras realizadas: ', num_carreras, '<br>',
+            'Número de pilotos que han participado: ', num_pilotos
+          )
+        )
+      
+      fig <- fig %>% layout(title = '', geo = g)
+      fig
+    })
+  }
+
+  shinyApp(ui = ui, server = server)
+}
+
+mapa_boxes_posicion_final <- function() {
+  ui <- fluidPage(
+    titlePanel("Paradas en boxes y posición final"),
+    sidebarLayout(
+      sidebarPanel(
+        selectInput("piloto", "Seleccione el Piloto:", choices = unique(datos_mapa_boxes_posicion_final$pilotos)),
+        selectInput("año", "Seleccione el Año:", choices = unique(datos_mapa_boxes_posicion_final$año))
+      ),
+      mainPanel(
+        plotOutput("boxStopsPlot")
+      )
+    )
+  )
+
+  server <- function(input, output) {
+    output$boxStopsPlot <- renderPlot({
+      plot_box_stops_and_position(input$piloto, input$año)
+    })
+    
+    plot_box_stops_and_position <- function(piloto_seleccionado, año_seleccionado) {
+      datos_filtrados <- datos_mapa_boxes_posicion_final %>%
+        filter(pilotos == piloto_seleccionado & año == año_seleccionado) %>%
+        group_by(competicion) %>%
+        summarise(pos_final = mean(pos_final), para_box = mean(para_box)) %>%
+        ungroup()
+      
+      competiciones_piloto <- datos_filtrados$competicion
+      
+      datos_completos <- datos_filtrados
+      
+      ggplot(datos_completos, aes(x = competicion)) +
+        geom_bar(aes(y = para_box, fill = "Paradas en Boxes"), stat = "identity") +
+        geom_point(aes(y = pos_final, color = "Posición Final"), size = 3) +
+        scale_color_manual(values = c("red"), labels = c("Posición Final")) +
+        scale_fill_manual(values = c("blue"), labels = c("Paradas en Boxes")) +
+        labs(title = paste("Paradas en Boxes y Posición Final de", piloto_seleccionado, "en", año_seleccionado),
+            x = "Competición", y = "Número paradas en boxes/Posición final") +
+        theme_minimal() +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+        scale_x_discrete(limits = competiciones_piloto)
+    }
+  }
+
+  shinyApp(ui = ui, server = server)
 }
 
 ui <- fluidPage(
@@ -862,12 +1012,20 @@ ui <- fluidPage(
     
     # Pestaña para Análisis de Componentes Principales (PCA)
     tabPanel("Análisis de Componentes Principales (PCA)", pca_app()),
-    
-    # Pestaña para Mapa de Popularidad
-    tabPanel("Mapa de Popularidad", mapa_popularidad()),
+
+    tabPanel("Visualización de Mapas", br(), 
+      tabsetPanel(
+        tabPanel("Popularidad de Circuitos por Año", mapa_popularidad_circuitos_año()),
+        tabPanel("Popularidad de la Carrera según Tweets Publicados por Horas", mapa_visualización_carrera_tweets()),
+        tabPanel("Países con más Pilotos", mapa_paises_mas_pilotos()),
+        tabPanel("Relación de Tiempos Realizados con Tweets", mapa_tiempos_realizados_tweets()),
+        tabPanel("Visualización de Circuitos de F1", mapa_circuitos_f1()),
+        tabPanel("Paradas en Boxes y Posición Final", mapa_boxes_posicion_final())
+      )
+    )
 
     # Pestaña para Análisis de Tweets
-    tabPanel("Análisis de Tweets", tweets_viz())
+    #tabPanel("Análisis de Tweets", tweets_viz())
   )
 )
 

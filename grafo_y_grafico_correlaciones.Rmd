@@ -1,0 +1,82 @@
+---
+title: "Grafo_y_grafico_correl"
+output: word_document
+date: "2024-05-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(dplyr)
+library(corrplot)
+library(e1071)
+library(igraph)
+
+```
+
+## Código común
+
+
+```{r Carga del dataset}
+
+dataset <- read.csv("dataset_f1_con_meteo.csv")
+
+# dataset =dataset[dataset$referencia=='hamilton',] #selección de un piloto, descomentar para filtrar 
+
+num_data <- scale(dataset[, sapply(dataset, is.numeric)])
+
+```
+
+## Gráfico
+
+Para ver la relación de una variable concreta con las demás. En principio es en general para todo el dataset, no se deberia filtrar por piloto. 
+
+```{r grafico, echo=FALSE}
+correlation <- cor(num_data)
+colnames(correlation) <- colnames(num_data)
+variable <- "humedad"
+colors <- ifelse(seq_along(colnames(correlation)) > (ncol(correlation) - 10), "red", "blue")
+plot(correlation[variable, ], main = paste("Correlación de '", variable, "' con otras variables"),
+     xlab = "", ylab = "Correlación", ylim = c(-1, 1), col = colors, pch = 16, xaxt = "n") 
+abline(h = c(0.5, -0.5), col = "red", lty = 2)
+text_labels <- text(1:ncol(correlation), par("usr")[3] - 0.05, labels = colnames(correlation), srt = 45, adj = 1, xpd = TRUE, cex = 0.8, col = colors)
+
+
+segments(1:ncol(correlation), par("usr")[3] - 0.05, 1:ncol(correlation), correlation[variable, ], col = colors, lty = "dashed")
+
+```
+
+Los vértices son las variables, hay arista si hay correlacion por debajo del umbral. Para pilotos mas malos, coche mas sensible a meteorologia. Color diferente para positiva y negativa. Color más intenso a mayor correlación. 2 componentes conexas para pilotos buenos.  
+
+```{r Grafo}
+
+correlation_matrix <- cor(num_data)
+correlation_matrix[is.na(correlation_matrix)] <- 0
+threshold <- 0.3 #cambiar el umbral si se quiere 
+
+graph <- graph.empty()
+
+for (i in colnames(correlation_matrix)) {
+  graph <- add_vertices(graph, 1, name = i)
+}
+
+for (i in 1:(ncol(correlation_matrix) - 1)) {
+  for (j in (i + 1):ncol(correlation_matrix)) {
+    if (abs(correlation_matrix[i, j]) > threshold) {
+      graph <- add_edges(graph, c(i, j), weight = round(correlation_matrix[i, j], 3))
+    }
+  }
+}
+
+graph <- delete.vertices(graph, which(degree(graph) == 0))
+vertex_positions <- layout_in_circle(graph, order = 1:vcount(graph))
+edge_colors <- colorRampPalette(c("red", "white", "blue"))(100) #escala de colores
+
+plot(graph, layout = vertex_positions, vertex.size = 5, vertex.label.cex = 1, 
+     vertex.label.color = "black", vertex.label.dist = -1, edge.arrow.size = 0, 
+     edge.color = edge_colors[findInterval(E(graph)$weight, seq(-1, 1, length.out = 101))], 
+     main = "Grafo de correlaciones", 
+     cex.main = 2, cex.axis = 1.5, cex.lab = 1.5)
+
+```
+
