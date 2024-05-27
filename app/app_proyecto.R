@@ -352,7 +352,7 @@ pca_app <- function() {
         
         desc_alo <- data.frame(
           "variable" = colnames(alo),
-          "tipo" = c(rep('id', 4), 'date', rep('numerical', 3), 'date', rep('categorical', 2), rep('numerical', 12)),
+          "tipo" = c(rep('id', 4), 'date', rep('numerical', 3), 'date', rep('categorical', 2), rep('numerical', 7), rep('date', 3), rep('numerical', 6)),
           stringsAsFactors = FALSE
         )
         
@@ -1022,10 +1022,10 @@ ui <- fluidPage(
         tabPanel("Visualización de Circuitos de F1", mapa_circuitos_f1()),
         tabPanel("Paradas en Boxes y Posición Final", mapa_boxes_posicion_final())
       )
-    )
+    ),
 
     # Pestaña para Análisis de Tweets
-    #tabPanel("Análisis de Tweets", tweets_viz())
+    tabPanel("Análisis de Tweets", tweets_viz())
   )
 )
 
